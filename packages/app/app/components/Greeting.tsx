@@ -2,8 +2,9 @@
 
 import { useState, useRef, useEffect } from "react";
 import { useGreeting } from "../hooks/useGreeting";
-import { useConnectModal } from "@rainbow-me/rainbowkit";
 import { toast } from "react-toastify";
+import { useConnect, useSwitchChain } from "wagmi";
+import { targetChainId } from "../lib/wallet";
 
 const Greeting = () => {
   const [newGreeting, setNewGreeting] = useState<string>("");
@@ -25,12 +26,13 @@ const Greeting = () => {
 
   const {
     address,
+    isWrongNetwork,
+    targetChainName,
     greeting,
     getGreetingLoading,
     getGreetingError,
     setGreeting,
     setGreetingLoading,
-    prepareSetGreetingError,
     setGreetingError,
   } = useGreeting({ newGreeting, onSetGreetingSuccess });
 
@@ -40,7 +42,13 @@ const Greeting = () => {
     }
   }, [address]);
 
-  const { openConnectModal } = useConnectModal();
+  const { connect, connectors, isPending: isConnecting } = useConnect();
+  const {
+    switchChain,
+    isPending: isSwitchingChain,
+    error: switchChainError,
+  } = useSwitchChain();
+  const injectedConnector = connectors[0];
 
   return (
     <div className="space-y-8">
@@ -71,7 +79,7 @@ const Greeting = () => {
             onChange={(e) => setNewGreeting(e.target.value)}
             placeholder="Write a new greeting"
             ref={newGreetingInputRef}
-            disabled={!address}
+            disabled={!address || isWrongNetwork}
             value={newGreeting}
           />
           <button
@@ -79,24 +87,58 @@ const Greeting = () => {
             onClick={setGreeting}
             disabled={
               !address ||
+              isWrongNetwork ||
               !newGreeting ||
-              setGreetingLoading ||
-              prepareSetGreetingError
+              setGreetingLoading
             }
           >
             {!setGreetingLoading
               ? `Set your new greeting on the blockchain`
               : `Setting greeting...`}
           </button>
+          {address && isWrongNetwork && (
+            <div className="rounded-md border border-amber-300 bg-amber-50 p-4 text-center space-y-3">
+              <p className="text-sm text-amber-800">
+                Current wallet network does not match {targetChainName}. Switch
+                MetaMask to continue the local demo.
+              </p>
+              <button
+                className="bg-amber-600 hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed text-white py-3 px-6 rounded-md"
+                onClick={() => switchChain({ chainId: targetChainId })}
+                disabled={isSwitchingChain}
+              >
+                {!isSwitchingChain
+                  ? `Switch to ${targetChainName}`
+                  : `Switching network...`}
+              </button>
+              {switchChainError && (
+                <p className="text-sm text-red-500">
+                  Automatic network switch failed. In MetaMask, manually select
+                  or add {targetChainName} and try again.
+                </p>
+              )}
+            </div>
+          )}
           {!address && (
             <button
               className="text-sm text-gray-500 text-center underline hover:opacity-80"
-              onClick={openConnectModal}
+              onClick={() =>
+                injectedConnector && connect({ connector: injectedConnector })
+              }
+              disabled={!injectedConnector || isConnecting}
             >
-              Connect your wallet to set a new greeting
+              {isConnecting
+                ? "Connecting MetaMask..."
+                : "Connect MetaMask to set a new greeting"}
             </button>
           )}
-          {address && !newGreeting && (
+          {address && isWrongNetwork && (
+            <p className="text-sm text-gray-500 text-center">
+              Contract reads stay on the configured chain, but writes are
+              disabled until MetaMask switches to {targetChainName}.
+            </p>
+          )}
+          {address && !isWrongNetwork && !newGreeting && (
             <p className="text-sm text-gray-500 text-center">
               Type something to set a new greeting
             </p>
@@ -104,11 +146,6 @@ const Greeting = () => {
           {setGreetingError && (
             <p className="text-sm text-red-500 text-center">
               There was an error setting your new greeting
-            </p>
-          )}
-          {newGreeting && prepareSetGreetingError && (
-            <p className="text-sm text-red-500 text-center">
-              Sorry, only the contract owner can set a greeting
             </p>
           )}
         </div>
