@@ -1,11 +1,11 @@
 import { Wrapper } from "./components/Wrapper";
-import { Greeting } from "./components/Greeting";
+import { CertiChainDemo } from "./components/CertiChainDemo";
 
 const Home = () => {
   return (
-    <main>
+    <main className="py-8 md:py-10">
       <Wrapper>
-        <Greeting />
+        <CertiChainDemo />
       </Wrapper>
     </main>
   );

@@ -2,7 +2,7 @@
 
 import { useAccount, useChainId, useConnect, useDisconnect } from "wagmi";
 import { Wrapper } from "./Wrapper";
-import { targetChainId } from "../lib/wallet";
+import { targetChain, targetChainId } from "../lib/wallet";
 
 const shortenAddress = (address: `0x${string}`) =>
   `${address.slice(0, 6)}...${address.slice(-4)}`;
@@ -15,22 +15,41 @@ const Header = () => {
   const injectedConnector = connectors[0];
 
   return (
-    <header className="py-8 border-b mb-10">
+    <header className="sticky top-0 z-20 border-b border-white/70 bg-white/70 backdrop-blur-xl">
       <Wrapper>
-        <div className="flex items-center justify-between">
-          <h1 className="text-lg md:text-xl font-bold">
-            Solidity Next.js Starter
-          </h1>
-          <div className="flex items-center gap-3">
-            {isConnected && address && (
-              <p className="text-sm text-gray-500">
-                {shortenAddress(address)} on {chainId}
-                {chainId === targetChainId ? "" : " (wrong network)"}
+        <div className="flex flex-col gap-4 py-6 lg:flex-row lg:items-center lg:justify-between">
+          <div className="space-y-2">
+            <p className="text-xs font-semibold uppercase tracking-[0.32em] text-slate-500">
+              Blockchain Classroom Demo
+            </p>
+            <div>
+              <h1 className="text-2xl font-semibold tracking-tight text-slate-950">
+                CertiChain
+              </h1>
+              <p className="text-sm text-slate-600">
+                Certificate issuance and verification on a local Ethereum demo
+                network
               </p>
+            </div>
+          </div>
+
+          <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center">
+            {isConnected && address && (
+              <div className="rounded-full border border-slate-200 bg-slate-50/90 px-4 py-3 text-sm text-slate-700">
+                <p className="font-medium text-slate-900">
+                  {shortenAddress(address)}
+                </p>
+                <p className="text-xs text-slate-500">
+                  Chain ID {chainId}
+                  {chainId === targetChainId
+                    ? ` • ${targetChain.name}`
+                    : ` • switch to ${targetChainId}`}
+                </p>
+              </div>
             )}
             {!isConnected ? (
               <button
-                className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white py-2 px-4 rounded-md"
+                className="rounded-full bg-slate-950 px-5 py-3 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
                 onClick={() =>
                   injectedConnector &&
                   connect({ connector: injectedConnector })
@@ -41,7 +60,7 @@ const Header = () => {
               </button>
             ) : (
               <button
-                className="border border-gray-300 hover:bg-gray-50 text-gray-700 py-2 px-4 rounded-md"
+                className="rounded-full border border-slate-300 bg-white px-5 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
                 onClick={() => disconnect()}
               >
                 Disconnect

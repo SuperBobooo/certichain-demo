@@ -1,16 +1,16 @@
 import "./globals.css";
 import "react-toastify/dist/ReactToastify.css";
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
+import { Space_Grotesk } from "next/font/google";
 import { Providers } from "./components/Providers";
 import { Header } from "./components/Header";
 import { ToastContainer } from "react-toastify";
 
-const inter = Inter({ subsets: ["latin"] });
+const spaceGrotesk = Space_Grotesk({ subsets: ["latin"] });
 export const metadata: Metadata = {
-  title: "Solidity Next.js Starter",
+  title: "CertiChain",
   description:
-    "A starter kit for building full stack Ethereum dApps with Solidity and Next.js",
+    "A blockchain-based certificate issuance and verification demo built with Solidity and Next.js",
 };
 
 export default function RootLayout({
@@ -20,12 +20,12 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className={inter.className}>
+      <body className={spaceGrotesk.className}>
         <Providers>
           <Header />
           {children}
         </Providers>
-        <ToastContainer />
+        <ToastContainer position="bottom-center" />
       </body>
     </html>
   );

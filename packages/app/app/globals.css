@@ -1,3 +1,35 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer base {
+  :root {
+    color: #14253f;
+    background-color: #f4f7f6;
+  }
+
+  html {
+    min-height: 100%;
+  }
+
+  body {
+    min-height: 100vh;
+    background:
+      radial-gradient(circle at top left, rgba(59, 130, 246, 0.16), transparent 28%),
+      radial-gradient(circle at top right, rgba(16, 185, 129, 0.14), transparent 24%),
+      linear-gradient(180deg, #f9fbff 0%, #f8f6ee 55%, #eff7f2 100%);
+    color: #14253f;
+    text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    background: rgba(16, 185, 129, 0.2);
+    color: #14253f;
+  }
+}
+
+@layer utilities {
+  .panel-shadow {
+    box-shadow: 0 24px 70px -36px rgba(15, 23, 42, 0.34);
+  }
+}

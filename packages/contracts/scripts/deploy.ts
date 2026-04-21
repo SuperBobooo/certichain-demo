@@ -1,14 +1,9 @@
 import { ethers } from "hardhat";
 
 async function main() {
-  const greeting = "Hello, world!";
-  const greeter = await ethers.deployContract("Greeter", [
-    greeting,
-  ]);
-  await greeter.waitForDeployment();
-  console.log(
-    `Greeter with greeting "${greeting}" deployed to ${greeter.target}`,
-  );
+  const certiChain = await ethers.deployContract("CertiChain");
+  await certiChain.waitForDeployment();
+  console.log(`CertiChain deployed to ${certiChain.target}`);
 }
 
 main().catch((error) => {

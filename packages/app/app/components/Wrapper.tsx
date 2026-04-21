@@ -1,7 +1,9 @@
 import { ReactNode } from "react";
 
 const Wrapper = ({ children }: { children: ReactNode }) => (
-  <div className="max-w-xl mx-auto px-6">{children}</div>
+  <div className="mx-auto w-full max-w-6xl px-4 sm:px-6 lg:px-8">
+    {children}
+  </div>
 );
 
 export { Wrapper };
