@@ -1,15 +1,12 @@
-# Solidity Next.js Starter
+# CertiChain
 
-A starter repository for building full stack Ethereum dApps with [Solidity](https://soliditylang.org/) and [Next.js](https://nextjs.org/).
+CertiChain is a classroom demo for certificate issuance, verification, and revocation using [Solidity](https://soliditylang.org/), Hardhat, [Next.js](https://nextjs.org/), and MetaMask.
 
-This code is for anyone looking to quickly bootstrap an EVM dApp using modern best practices. In particular, developers with existing JavaScript/TypeScript experience who're newer to Solidity.
+The demo keeps original certificate metadata off-chain. The browser computes a local metadata hash, stores that hash in the smart contract, and later recomputes the same hash during verification. Revoked certificates remain visible on chain but no longer verify as valid.
 
-If you want to learn how to interact with a simple smart contract from the client side, this repository is for you.
-
-![Solidity + Next.js Starter](./screenshot.png)
+![CertiChain demo](./screenshot.png)
 
 - [Get started](#getting-started)
-- [Read changelog](./CHANGELOG.md)
 
 ## Packages
 
@@ -30,9 +27,9 @@ If you want to learn how to interact with a simple smart contract from the clien
 #### Contracts Scripts
 
 - `yarn start` - Starts your local Hardhat network
-- `yarn test` - Tests `Greeter.sol`'s functionality
-- `yarn deploy` - Deploys `Greeter.sol` to your local Hardhat network
-- `yarn deploy:sepolia` - Deploys `Greeter.sol` to the Sepolia test network
+- `yarn test` - Tests `CertiChain.sol` issuance, verification, and revocation
+- `yarn deploy` - Deploys `CertiChain.sol` to your local Hardhat network
+- `yarn deploy:sepolia` - Deploys `CertiChain.sol` to the Sepolia test network
 - `yarn format` - Formats all code using Prettier
 
 ### App
@@ -69,11 +66,9 @@ How to get running on your local machine:
 
 ### Initial Setup
 
-Use `git clone https://github.com/tomhirst/solidity-nextjs-starter.git` to clone this repository to your local machine.
+Enter the repository folder, then install all dependencies using `yarn`.
 
-Enter the repository folder with `cd solidity-nextjs-starter`, then install all dependencies using `yarn`.
-
-Solidity Next.js Starter uses Yarn workspaces, so this will install the relevant dependencies for each packages in one command.
+This repository uses Yarn workspaces, so this will install the relevant dependencies for each package in one command.
 
 ### Contracts Setup
 
@@ -84,10 +79,11 @@ Account #0: 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266 (10000 ETH)
 Private Key: 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
 ```
 
-In a new terminal window, deploy the `Greeter` contract using `yarn deploy`. If you're successful, you'll get a contract address (that you'll also need later) like this:
+In a new terminal window, deploy the `CertiChain` contract using `yarn deploy`. If you're successful, you'll get a contract address (that you'll also need later) like this:
 
 ```bash
-Greeter with greeting "Hello, world!" deployed to 0x5FbDB2315678afecb367f032d93F642f64180aa3
+CertiChain deployed to 0x5FbDB2315678afecb367f032d93F642f64180aa3
+Set NEXT_PUBLIC_CONTRACT_ADDRESS to this address before running the Next.js demo.
 ```
 
 ### App Setup
@@ -100,7 +96,7 @@ Afterwards, duplicate `.env.example` and rename the file `.env`.
 
 `NEXT_PUBLIC_CHAIN_ID` should already be set to the Hardhat local network ID of `31337` (change this when you want your app to run on other chains).
 
-Finally, set `NEXT_PUBLIC_CONTRACT_ADDRESS` using the contract address you recieved when you deployed. For example: `NEXT_PUBLIC_CONTRACT_ADDRESS=0x5FbDB2315678afecb367f032d93F642f64180aa3`
+Finally, set `NEXT_PUBLIC_CONTRACT_ADDRESS` using the contract address you received when you deployed. For example: `NEXT_PUBLIC_CONTRACT_ADDRESS=0x5FbDB2315678afecb367f032d93F642f64180aa3`
 
 Once your environment variables are set, run the application using `yarn dev`. To view, open up `localhost:3000` (or whatever port Next.js has assigned) in your browser.
 
@@ -110,7 +106,14 @@ To fully demo the apps' features, you'll need a web3 wallet extension. If you do
 
 If you haven't used Hardhat before, you'll need to add a test account to write to the smart contract that you deployed. Do this by importing one of the accounts you noted down earlier to MetaMask using the accounts' private key (for example, `0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80`).
 
-Once connected to the app with the test account, you can set a new greeting on the blockchain by using the form on page. You'll get a confirmation message if you're successful.
+Once connected to the app with the test account, you can issue a certificate, verify the original metadata, revoke the certificate from the same issuer wallet, and verify again to see the revoked status.
+
+### Demo Flow
+
+1. Use sample data in **Issue Certificate** and submit the transaction.
+2. Use **Use Latest Issued Data** in **Verify Certificate** and verify. The result should be `VALID`.
+3. Use **Use Latest Issued Certificate** in **Revoke Certificate** and submit the transaction from the original issuer wallet.
+4. Verify the same certificate and metadata again. The result should be `REVOKED`, with hash match still shown as `Yes`.
 
 ## Advanced
 
@@ -136,10 +139,8 @@ SEPOLIA_PRIVATE_KEY=[your-private-key]
 Finally, run `yarn deploy:sepolia`. If you're successful, you'll get a message ike this in your terminal window:
 
 ```bash
-Greeter with greeting "Hello, world!" deployed to 0xE47c47B1db8823BA54aae021cfce03b2d37B52a8
+CertiChain deployed to 0xE47c47B1db8823BA54aae021cfce03b2d37B52a8
 ```
-
-Here's a version of the contract I deployed earlier: [0xE47c47B1db8823BA54aae021cfce03b2d37B52a8](https://sepolia.etherscan.io/address/0xE47c47B1db8823BA54aae021cfce03b2d37B52a8)
 
 #### Verifying Your Contract on Sepolia
 
@@ -149,12 +150,12 @@ Let's verify your newly deployed contract with Etherscan. First, get an Ethersca
 ETHERSCAN_API_KEY=[your-api-key]
 ```
 
-Run `yarn verify:sepolia [your-contract-address] 'Hello, world!'` to verify your contract. Be sure to pass the address of the contract you just deployed and the constructor parameter, which in this case is the default greeting.
+Run `yarn verify:sepolia [your-contract-address]` to verify your contract. CertiChain has no constructor arguments.
 
 If you're successful, you'll get a message like this:
 
 ```bash
-Successfully verified contract Greeter on the block explorer.
+Successfully verified contract CertiChain on the block explorer.
 ```
 
 ### Advanced App
@@ -177,7 +178,7 @@ This will let you point your front end at a publically viewable contract on a ne
 
 You can deploy the application to Vercel by clicking this button:
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Ftomhirst%2Fsolidity-nextjs-starter%2Ftree%2Fmain%2Fpackages%2Fapp)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new)
 
 Be sure to deploy from the `packages/app` directory and set these environment variables:
 
@@ -187,17 +188,9 @@ NEXT_PUBLIC_CONTRACT_ADDRESS=[your-contract-address]
 NEXT_PUBLIC_CHAIN_ID=[your-chain-id]
 ```
 
-Here's an app I deployed earlier: [https://solidity-nextjs-starter-app.vercel.app/](https://solidity-nextjs-starter-app.vercel.app/)
-
-## Why I Built This
-
-I built this to onboard myself to web3. Since 2021, Solidity Next.js Starter has amassed 100s of GitHub stars and helped devs land dream gigs in the space.
-
-![A tweet exchange](./why-i-built-this.png)
-
 ## Contributions
 
-All suggestions for improvement are welcome. Please submit a [pull request](https://github.com/tomhirst/solidity-nextjs-starter/pulls) to contribute.
+All suggestions for improvement are welcome.
 
 ## Disclaimer
 

@@ -26,6 +26,10 @@ type VerifyCertificateInput = {
   metadataHash: string;
 };
 
+type RevokeCertificateInput = {
+  certificateId: string;
+};
+
 type CertificateDetails = {
   certificateId: string;
   recipientName: string;
@@ -34,10 +38,19 @@ type CertificateDetails = {
   metadataHash: string;
   issuerWallet: string;
   issueTime: number;
-  isValid: boolean;
+  revoked: boolean;
+  revokedAt: number;
+  revokedBy: string;
 };
 
-type IssueStage = "idle" | "waiting_wallet" | "pending_confirmation" | "success";
+type TransactionStage =
+  | "idle"
+  | "waiting_wallet"
+  | "pending_confirmation"
+  | "success";
+
+type IssueStage = TransactionStage;
+type RevokeStage = TransactionStage;
 
 type IssueCertificateResult = {
   certificate: CertificateDetails;
@@ -46,8 +59,21 @@ type IssueCertificateResult = {
   transactionHash: string;
 };
 
+type RevokeCertificateResult = {
+  certificate: CertificateDetails;
+  chainId: number;
+  chainName: string;
+  transactionHash: string;
+};
+
+type VerificationStatus = "valid" | "revoked" | "hash_mismatch" | "not_found";
+
 type VerificationResult = {
-  isValid: boolean;
+  exists: boolean;
+  hashMatches: boolean;
+  revoked: boolean;
+  valid: boolean;
+  status: VerificationStatus;
   certificate: CertificateDetails | null;
 };
 
@@ -73,6 +99,15 @@ const hashCertificateMetadata = (metadataText: string) => {
   return keccak256(toUtf8Bytes(normalizedMetadata));
 };
 
+const knownErrorMessages: Record<string, string> = {
+  "Certificate not found": "Certificate does not exist.",
+  "Certificate already revoked": "Certificate already revoked.",
+  "Only issuer can revoke":
+    "Only the original issuer can revoke this certificate.",
+  "user rejected": "User rejected transaction.",
+  "User rejected": "User rejected transaction.",
+};
+
 const getReadableErrorMessage = (
   error: unknown,
   fallback: string,
@@ -82,20 +117,33 @@ const getReadableErrorMessage = (
   }
 
   const candidate = error as {
+    code?: string;
     shortMessage?: string;
     reason?: string;
     message?: string;
     info?: { error?: { message?: string } };
   };
 
-  const message =
+  const rawMessage =
     candidate.shortMessage ??
     candidate.reason ??
     candidate.info?.error?.message ??
     candidate.message ??
     fallback;
 
-  return message.replace("execution reverted: ", "");
+  const cleaned = rawMessage.replace("execution reverted: ", "");
+
+  for (const [needle, message] of Object.entries(knownErrorMessages)) {
+    if (cleaned.includes(needle)) {
+      return message;
+    }
+  }
+
+  if (candidate.code === "ACTION_REJECTED") {
+    return "User rejected transaction.";
+  }
+
+  return cleaned;
 };
 
 const getReadContract = () => {
@@ -136,6 +184,8 @@ const toCertificateDetails = (
     string,
     bigint,
     boolean,
+    bigint,
+    string,
   ],
 ): CertificateDetails => ({
   certificateId: certificateResponse[0],
@@ -145,8 +195,31 @@ const toCertificateDetails = (
   metadataHash: certificateResponse[4],
   issuerWallet: certificateResponse[5],
   issueTime: Number(certificateResponse[6]),
-  isValid: certificateResponse[7],
+  revoked: certificateResponse[7],
+  revokedAt: Number(certificateResponse[8]),
+  revokedBy: certificateResponse[9],
 });
+
+const getVerificationStatus = (
+  exists: boolean,
+  hashMatches: boolean,
+  revoked: boolean,
+  valid: boolean,
+): VerificationStatus => {
+  if (!exists) {
+    return "not_found";
+  }
+
+  if (!hashMatches) {
+    return "hash_mismatch";
+  }
+
+  if (revoked) {
+    return "revoked";
+  }
+
+  return valid ? "valid" : "hash_mismatch";
+};
 
 const useCertiChain = () => {
   const { address } = useAccount();
@@ -154,10 +227,16 @@ const useCertiChain = () => {
   const isWrongNetwork = Boolean(address) && chainId !== targetChainId;
   const [issueLoading, setIssueLoading] = useState(false);
   const [verifyLoading, setVerifyLoading] = useState(false);
+  const [revokeLoading, setRevokeLoading] = useState(false);
   const [issueError, setIssueError] = useState<string | null>(null);
   const [verifyError, setVerifyError] = useState<string | null>(null);
+  const [revokeError, setRevokeError] = useState<string | null>(null);
   const [issueStage, setIssueStage] = useState<IssueStage>("idle");
+  const [revokeStage, setRevokeStage] = useState<RevokeStage>("idle");
   const [issueTransactionHash, setIssueTransactionHash] = useState<
+    string | null
+  >(null);
+  const [revokeTransactionHash, setRevokeTransactionHash] = useState<
     string | null
   >(null);
 
@@ -165,6 +244,12 @@ const useCertiChain = () => {
     setIssueError(null);
     setIssueStage("idle");
     setIssueTransactionHash(null);
+  };
+
+  const resetRevokeState = () => {
+    setRevokeError(null);
+    setRevokeStage("idle");
+    setRevokeTransactionHash(null);
   };
 
   const getCertificate = async (
@@ -180,6 +265,8 @@ const useCertiChain = () => {
       string,
       bigint,
       boolean,
+      bigint,
+      string,
     ];
 
     return toCertificateDetails(certificate);
@@ -251,19 +338,31 @@ const useCertiChain = () => {
 
     try {
       const contract = getReadContract();
-      const isValid = (await contract.verifyCertificate(
+      const verification = (await contract.verifyCertificate(
         input.certificateId,
         input.metadataHash,
-      )) as boolean;
+      )) as [boolean, boolean, boolean, boolean];
 
-      if (!isValid) {
-        return { isValid: false, certificate: null };
+      const [exists, hashMatches, revoked, valid] = verification;
+      const status = getVerificationStatus(
+        exists,
+        hashMatches,
+        revoked,
+        valid,
+      );
+
+      let certificate: CertificateDetails | null = null;
+
+      if (exists) {
+        certificate = await getCertificate(input.certificateId);
       }
 
-      const certificate = await getCertificate(input.certificateId);
-
       return {
-        isValid,
+        exists,
+        hashMatches,
+        revoked,
+        valid,
+        status,
         certificate,
       };
     } catch (error) {
@@ -275,6 +374,58 @@ const useCertiChain = () => {
       throw error;
     } finally {
       setVerifyLoading(false);
+    }
+  };
+
+  const revokeCertificate = async (
+    input: RevokeCertificateInput,
+  ): Promise<RevokeCertificateResult> => {
+    if (!address) {
+      const message = "Connect MetaMask before revoking a certificate.";
+      setRevokeError(message);
+      throw new Error(message);
+    }
+
+    if (isWrongNetwork) {
+      const message = `Switch MetaMask to ${targetChain.name} (${targetChainId}) before revoking.`;
+      setRevokeError(message);
+      throw new Error(message);
+    }
+
+    setRevokeLoading(true);
+    setRevokeError(null);
+    setRevokeStage("waiting_wallet");
+    setRevokeTransactionHash(null);
+
+    try {
+      const contract = await getWriteContract(address);
+      const tx = await contract.revokeCertificate(input.certificateId);
+
+      const submittedTxHash = tx.hash as string;
+      setRevokeTransactionHash(submittedTxHash);
+      setRevokeStage("pending_confirmation");
+
+      const receipt = await tx.wait();
+      const certificate = await getCertificate(input.certificateId);
+
+      setRevokeStage("success");
+
+      return {
+        certificate,
+        chainId: targetChainId,
+        chainName: `${targetChain.name} (${targetChainId})`,
+        transactionHash: receipt?.hash ?? submittedTxHash,
+      };
+    } catch (error) {
+      const message = getReadableErrorMessage(
+        error,
+        "Unable to revoke the certificate on chain.",
+      );
+      setRevokeError(message);
+      setRevokeStage("idle");
+      throw error;
+    } finally {
+      setRevokeLoading(false);
     }
   };
 
@@ -290,6 +441,12 @@ const useCertiChain = () => {
     issueStage,
     issueTransactionHash,
     resetIssueState,
+    resetRevokeState,
+    revokeCertificate,
+    revokeError,
+    revokeLoading,
+    revokeStage,
+    revokeTransactionHash,
     targetChainName: `${targetChain.name} (${targetChainId})`,
     verifyCertificate,
     verifyError,
@@ -302,7 +459,11 @@ export type {
   IssueCertificateInput,
   IssueCertificateResult,
   IssueStage,
+  RevokeCertificateInput,
+  RevokeCertificateResult,
+  RevokeStage,
   VerificationResult,
+  VerificationStatus,
   VerifyCertificateInput,
 };
 export { hashCertificateMetadata, useCertiChain };

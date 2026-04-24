@@ -7,7 +7,9 @@ import {
   hashCertificateMetadata,
   type CertificateDetails,
   type IssueStage,
+  type RevokeStage,
   type VerificationResult,
+  type VerificationStatus,
   useCertiChain,
 } from "../hooks/useCertiChain";
 import { targetChainId } from "../lib/wallet";
@@ -23,6 +25,10 @@ type IssueFormState = {
 type VerifyFormState = {
   certificateId: string;
   metadataText: string;
+};
+
+type RevokeFormState = {
+  certificateId: string;
 };
 
 type FieldErrors<T> = Partial<Record<keyof T, string>>;
@@ -41,6 +47,12 @@ type VerificationPanelState = VerificationResult & {
   checkedAt: number;
 };
 
+type RevokePanelState = {
+  certificate: CertificateDetails;
+  transactionHash: string;
+  revokedAt: number;
+};
+
 type ProgressState = "pending" | "active" | "done";
 
 const initialIssueForm: IssueFormState = {
@@ -54,6 +66,10 @@ const initialIssueForm: IssueFormState = {
 const initialVerifyForm: VerifyFormState = {
   certificateId: "",
   metadataText: "",
+};
+
+const initialRevokeForm: RevokeFormState = {
+  certificateId: "",
 };
 
 const sampleIssueForm: IssueFormState = {
@@ -70,12 +86,75 @@ Verifier: CertiChain Academy`,
 
 const latestIssuedStorageKey = "certichain.latest-issued-certificate";
 
-const demoFlow = [
-  "Fill certificate data",
-  "Generate metadata hash",
-  "Issue on chain",
-  "Verify authenticity",
+const introSections = [
+  {
+    id: "why",
+    title: "Why this demo",
+    content: [
+      "PDF certificates and screenshots are easy to copy, edit, and redistribute.",
+      "A verifier usually cannot tell whether a file came from the issuer or was changed later.",
+      "CertiChain demonstrates how a blockchain record can act as a tamper-resistant trust anchor.",
+      "The goal is to make the authenticity problem visible in a short classroom workflow.",
+    ],
+  },
+  {
+    id: "how",
+    title: "How it works",
+    content: [
+      "The issuer enters certificate fields and metadata text in the browser.",
+      "The frontend normalizes the metadata text and computes a hash locally.",
+      "MetaMask submits the certificate ID, public fields, issuer wallet, and metadata hash to the local chain.",
+      "Verification recomputes the hash from the submitted metadata and compares it with the on-chain anchor.",
+    ],
+  },
+  {
+    id: "storage",
+    title: "On-chain vs off-chain",
+    content: [
+      "On-chain: certificate ID, recipient, course, issuer name, issuer wallet, metadata hash, issue time, and revoke status.",
+      "Off-chain: the original metadata text and any full certificate document.",
+      "This keeps the demo privacy-friendly while still proving whether the metadata was changed.",
+      "A revoked record remains visible, but it is no longer treated as valid.",
+    ],
+  },
 ];
+
+const demoFlow = [
+  "Issue a certificate",
+  "Verify the original metadata",
+  "Revoke the certificate",
+  "Verify again to show revoked",
+];
+
+const statusContent: Record<
+  VerificationStatus,
+  { label: string; tone: string; description: string }
+> = {
+  valid: {
+    label: "VALID",
+    tone: "emerald",
+    description:
+      "The certificate exists, the metadata hash matches, and the record has not been revoked.",
+  },
+  revoked: {
+    label: "REVOKED",
+    tone: "amber",
+    description:
+      "The metadata hash still matches, but the original issuer has revoked this certificate.",
+  },
+  hash_mismatch: {
+    label: "HASH MISMATCH",
+    tone: "rose",
+    description:
+      "The certificate exists, but the provided metadata produces a different hash.",
+  },
+  not_found: {
+    label: "NOT FOUND",
+    tone: "slate",
+    description:
+      "No certificate with this ID was found in the deployed CertiChain contract.",
+  },
+};
 
 const truncateMiddle = (value: string, start = 10, end = 8) =>
   value.length <= start + end + 3
@@ -93,6 +172,9 @@ const formatPanelTimestamp = (timestamp: number) =>
     dateStyle: "medium",
     timeStyle: "short",
   }).format(new Date(timestamp));
+
+const formatOptionalChainTime = (timestamp: number) =>
+  timestamp > 0 ? formatIssueTime(timestamp) : "Not revoked";
 
 const validateIssueForm = (
   form: IssueFormState,
@@ -145,44 +227,74 @@ const validateVerifyForm = (
   return errors;
 };
 
-const getIssueProgressState = (
+const validateRevokeForm = (
+  form: RevokeFormState,
+): FieldErrors<RevokeFormState> => {
+  const errors: FieldErrors<RevokeFormState> = {};
+
+  if (!form.certificateId.trim()) {
+    errors.certificateId = "Certificate ID is required.";
+  } else if (form.certificateId.trim().length < 6) {
+    errors.certificateId = "Use the full certificate ID before revoking.";
+  }
+
+  return errors;
+};
+
+const getTransactionProgressState = (
   step: "wallet" | "submitted" | "confirmation" | "success",
-  issueStage: IssueStage,
-  issueTransactionHash: string | null,
+  stage: IssueStage | RevokeStage,
+  transactionHash: string | null,
 ): ProgressState => {
   if (step === "wallet") {
-    if (issueStage === "waiting_wallet") {
+    if (stage === "waiting_wallet") {
       return "active";
     }
 
     if (
-      issueStage === "pending_confirmation" ||
-      issueStage === "success" ||
-      issueTransactionHash
+      stage === "pending_confirmation" ||
+      stage === "success" ||
+      transactionHash
     ) {
       return "done";
     }
   }
 
   if (step === "submitted") {
-    return issueTransactionHash ? "done" : "pending";
+    return transactionHash ? "done" : "pending";
   }
 
   if (step === "confirmation") {
-    if (issueStage === "pending_confirmation") {
+    if (stage === "pending_confirmation") {
       return "active";
     }
 
-    if (issueStage === "success") {
+    if (stage === "success") {
       return "done";
     }
   }
 
   if (step === "success") {
-    return issueStage === "success" ? "done" : "pending";
+    return stage === "success" ? "done" : "pending";
   }
 
   return "pending";
+};
+
+const getStatusClasses = (tone: string) => {
+  if (tone === "emerald") {
+    return "border-emerald-200 bg-emerald-50/75 text-emerald-900";
+  }
+
+  if (tone === "amber") {
+    return "border-amber-200 bg-amber-50/80 text-amber-900";
+  }
+
+  if (tone === "rose") {
+    return "border-rose-200 bg-rose-50/85 text-rose-900";
+  }
+
+  return "border-slate-200 bg-slate-50/85 text-slate-800";
 };
 
 const CopyButton = ({
@@ -305,19 +417,68 @@ const ProgressItem = ({
   </div>
 );
 
+const TransactionProgress = ({
+  successLabel,
+  stage,
+  transactionHash,
+}: {
+  successLabel: string;
+  stage: IssueStage | RevokeStage;
+  transactionHash: string | null;
+}) => (
+  <div className="mt-5 space-y-3">
+    <ProgressItem
+      label="Waiting for wallet confirmation"
+      state={getTransactionProgressState("wallet", stage, transactionHash)}
+    />
+    <ProgressItem
+      label="Transaction submitted"
+      state={getTransactionProgressState("submitted", stage, transactionHash)}
+    />
+    <ProgressItem
+      label="Waiting for block confirmation"
+      state={getTransactionProgressState("confirmation", stage, transactionHash)}
+    />
+    <ProgressItem
+      label={successLabel}
+      state={getTransactionProgressState("success", stage, transactionHash)}
+    />
+  </div>
+);
+
+const CertificateStatusPill = ({ revoked }: { revoked: boolean }) => (
+  <span
+    className={`inline-flex rounded-full px-3 py-1 text-xs font-semibold ${
+      revoked
+        ? "bg-amber-100 text-amber-800"
+        : "bg-emerald-100 text-emerald-800"
+    }`}
+  >
+    {revoked ? "Revoked" : "Active"}
+  </span>
+);
+
 const CertiChainDemo = () => {
   const [issueForm, setIssueForm] = useState<IssueFormState>(initialIssueForm);
-  const [verifyForm, setVerifyForm] = useState<VerifyFormState>(initialVerifyForm);
+  const [verifyForm, setVerifyForm] =
+    useState<VerifyFormState>(initialVerifyForm);
+  const [revokeForm, setRevokeForm] =
+    useState<RevokeFormState>(initialRevokeForm);
   const [issueErrors, setIssueErrors] = useState<FieldErrors<IssueFormState>>(
     {},
   );
   const [verifyErrors, setVerifyErrors] = useState<FieldErrors<VerifyFormState>>(
     {},
   );
+  const [revokeErrors, setRevokeErrors] = useState<FieldErrors<RevokeFormState>>(
+    {},
+  );
   const [latestIssued, setLatestIssued] =
     useState<LatestIssuedSnapshot | null>(null);
   const [verificationPanel, setVerificationPanel] =
     useState<VerificationPanelState | null>(null);
+  const [revokePanel, setRevokePanel] = useState<RevokePanelState | null>(null);
+  const [openIntroSection, setOpenIntroSection] = useState<string | null>(null);
 
   const issueMetadataHash = hashCertificateMetadata(issueForm.metadataText);
   const verifyMetadataHash = hashCertificateMetadata(verifyForm.metadataText);
@@ -333,6 +494,12 @@ const CertiChainDemo = () => {
     issueStage,
     issueTransactionHash,
     resetIssueState,
+    resetRevokeState,
+    revokeCertificate,
+    revokeError,
+    revokeLoading,
+    revokeStage,
+    revokeTransactionHash,
     targetChainName,
     verifyCertificate,
     verifyError,
@@ -353,8 +520,6 @@ const CertiChainDemo = () => {
       return;
     }
 
-    // Persist the latest successful issuance locally so a page refresh does not
-    // erase the classroom demo state before a backend or chain-driven history exists.
     const stored = window.localStorage.getItem(latestIssuedStorageKey);
 
     if (!stored) {
@@ -373,11 +538,7 @@ const CertiChainDemo = () => {
   }, []);
 
   useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    if (!latestIssued) {
+    if (typeof window === "undefined" || !latestIssued) {
       return;
     }
 
@@ -402,10 +563,30 @@ const CertiChainDemo = () => {
     : issueStage === "waiting_wallet"
       ? "Confirm the transaction in MetaMask to submit the certificate record."
       : issueStage === "pending_confirmation"
-        ? "The transaction is on its way to the next block. Once confirmed, the latest-issued panel will refresh."
+        ? "The transaction has been submitted. Wait for the local block confirmation."
         : issueStage === "success"
-          ? "The certificate record is now anchored on chain and available for verification."
-          : "Fill the form, generate a metadata hash, preview the record, then issue it on chain.";
+          ? "The certificate record is anchored on chain and ready to verify."
+          : "Fill the form, inspect the local metadata hash, then issue the record on chain.";
+
+  const revokeStatusTitle = revokeError
+    ? "Revocation failed"
+    : revokeStage === "waiting_wallet"
+      ? "Waiting for wallet confirmation"
+      : revokeStage === "pending_confirmation"
+        ? "Waiting for block confirmation"
+        : revokeStage === "success"
+          ? "Certificate revoked successfully"
+          : "Ready to revoke";
+
+  const revokeStatusDescription = revokeError
+    ? revokeError
+    : revokeStage === "waiting_wallet"
+      ? "Confirm the revocation transaction in MetaMask."
+      : revokeStage === "pending_confirmation"
+        ? "The revocation transaction has been submitted and is waiting for confirmation."
+        : revokeStage === "success"
+          ? "The certificate remains on chain, but future verification will report it as revoked."
+          : "Only the original issuer wallet can revoke a certificate in this demo.";
 
   const handleIssueFieldChange = (
     field: keyof IssueFormState,
@@ -437,6 +618,21 @@ const CertiChainDemo = () => {
     }));
   };
 
+  const handleRevokeFieldChange = (
+    field: keyof RevokeFormState,
+    value: string,
+  ) => {
+    setRevokeForm((current) => ({
+      ...current,
+      [field]: value,
+    }));
+
+    setRevokeErrors((current) => ({
+      ...current,
+      [field]: undefined,
+    }));
+  };
+
   const handleUseSampleData = () => {
     setIssueForm(sampleIssueForm);
     setIssueErrors({});
@@ -454,6 +650,19 @@ const CertiChainDemo = () => {
     });
     setVerifyErrors({});
     toast.success("Latest issued certificate loaded into the verify form.");
+  };
+
+  const handleLoadLatestIntoRevoke = () => {
+    if (!latestIssued) {
+      return;
+    }
+
+    setRevokeForm({
+      certificateId: latestIssued.certificate.certificateId,
+    });
+    setRevokeErrors({});
+    resetRevokeState();
+    toast.success("Latest issued certificate loaded into the revoke form.");
   };
 
   const handleIssueSubmit = async (event: FormEvent<HTMLFormElement>) => {
@@ -490,6 +699,7 @@ const CertiChainDemo = () => {
       };
 
       setLatestIssued(nextLatestIssued);
+      setRevokePanel(null);
       setIssueForm(initialIssueForm);
       setIssueErrors({});
       toast.success("Certificate issued on chain.");
@@ -505,7 +715,9 @@ const CertiChainDemo = () => {
     setVerifyErrors(nextErrors);
 
     if (Object.values(nextErrors).some(Boolean)) {
-      toast.error("Complete the certificate ID and metadata text before verifying.");
+      toast.error(
+        "Complete the certificate ID and metadata text before verifying.",
+      );
       return;
     }
 
@@ -527,17 +739,68 @@ const CertiChainDemo = () => {
         checkedAt: Date.now(),
       });
 
-      if (result.isValid) {
+      if (result.status === "valid") {
         toast.success("Certificate verified successfully.");
+      } else if (result.status === "revoked") {
+        toast.warn("Certificate is revoked.");
+      } else if (result.status === "not_found") {
+        toast.error("Certificate not found.");
       } else {
-        toast.error("Certificate verification returned INVALID.");
+        toast.error("Certificate metadata hash does not match.");
       }
     } catch {
       toast.error("Unable to verify the certificate.");
     }
   };
 
-  const walletCardValue = address ? truncateMiddle(address, 10, 6) : "Disconnected";
+  const handleRevokeSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    const nextErrors = validateRevokeForm(revokeForm);
+    setRevokeErrors(nextErrors);
+
+    if (Object.values(nextErrors).some(Boolean)) {
+      toast.error("Enter the certificate ID before revoking.");
+      return;
+    }
+
+    try {
+      const result = await revokeCertificate({
+        certificateId: revokeForm.certificateId.trim(),
+      });
+
+      setRevokePanel({
+        certificate: result.certificate,
+        transactionHash: result.transactionHash,
+        revokedAt: Date.now(),
+      });
+
+      setLatestIssued((current) => {
+        if (
+          !current ||
+          current.certificate.certificateId !== result.certificate.certificateId
+        ) {
+          return current;
+        }
+
+        return {
+          ...current,
+          certificate: result.certificate,
+          transactionHash: result.transactionHash,
+          storedAt: Date.now(),
+        };
+      });
+
+      setRevokeErrors({});
+      toast.success("Certificate revoked on chain.");
+    } catch {
+      toast.error("Certificate revocation failed.");
+    }
+  };
+
+  const walletCardValue = address
+    ? truncateMiddle(address, 10, 6)
+    : "Disconnected";
   const chainStatusValue = address
     ? chainId === targetChainId
       ? targetChainName
@@ -547,12 +810,57 @@ const CertiChainDemo = () => {
     ? truncateMiddle(contractAddress, 10, 6)
     : "Not configured";
 
+  const renderWalletWriteNotice = (action: "issue" | "revoke") => (
+    <>
+      {!address && (
+        <div className="mt-6 rounded-[24px] border border-slate-200 bg-slate-50/80 p-4">
+          <p className="text-sm text-slate-700">
+            MetaMask is required because {action} sends a transaction.
+          </p>
+          <button
+            className="mt-4 rounded-full bg-slate-950 px-5 py-3 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+            onClick={() =>
+              injectedConnector && connect({ connector: injectedConnector })
+            }
+            disabled={!injectedConnector || isConnecting}
+            type="button"
+          >
+            {isConnecting ? "Connecting MetaMask..." : "Connect MetaMask"}
+          </button>
+        </div>
+      )}
+
+      {address && isWrongNetwork && (
+        <div className="mt-6 rounded-[24px] border border-amber-200 bg-amber-50/90 p-4">
+          <p className="text-sm text-amber-900">
+            MetaMask is on the wrong network. Switch to {targetChainName} to
+            {` ${action}`} certificates on the demo chain.
+          </p>
+          <button
+            className="mt-4 rounded-full bg-amber-600 px-5 py-3 text-sm font-medium text-white transition hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-50"
+            onClick={() => switchChain({ chainId: targetChainId })}
+            disabled={isSwitchingChain}
+            type="button"
+          >
+            {isSwitchingChain
+              ? "Switching Network..."
+              : `Switch to ${targetChainName}`}
+          </button>
+          {switchChainError && (
+            <p className="mt-3 text-sm text-rose-600">
+              Automatic switching failed. Select {targetChainName} manually in
+              MetaMask and try again.
+            </p>
+          )}
+        </div>
+      )}
+    </>
+  );
+
   return (
     <div className="space-y-8 pb-16">
       <section className="grid gap-6 xl:grid-cols-[1.18fr_0.82fr]">
         <article className="panel-shadow relative overflow-hidden rounded-[34px] border border-white/70 bg-white/82 p-8 backdrop-blur-xl md:p-10">
-          <div className="pointer-events-none absolute -right-12 top-0 h-44 w-44 rounded-full bg-emerald-200/60 blur-3xl" />
-          <div className="pointer-events-none absolute -left-10 bottom-0 h-44 w-44 rounded-full bg-sky-200/70 blur-3xl" />
           <div className="relative space-y-6">
             <p className="text-xs font-semibold uppercase tracking-[0.34em] text-slate-500">
               Course Demo Prototype
@@ -562,63 +870,86 @@ const CertiChainDemo = () => {
                 CertiChain
               </h2>
               <p className="max-w-3xl text-lg text-slate-700 md:text-xl">
-                Tamper-resistant certificate issuance and verification powered
-                by blockchain
+                Tamper-resistant certificate issuance, verification, and
+                revocation powered by blockchain
               </p>
               <p className="max-w-3xl text-sm leading-7 text-slate-600 md:text-base">
-                Educational certificates, training proofs, competition awards,
-                and internship records are easy to fake when they exist only as
-                PDFs or screenshots. CertiChain uses a blockchain record as a
-                trust anchor: the original metadata stays off-chain, while a
-                reproducible hash is anchored on-chain for later authenticity
-                checks.
+                CertiChain anchors certificate metadata hashes on a local
+                Ethereum demo chain. The original metadata stays off-chain, and
+                verifiers later recompute the same hash to check authenticity.
               </p>
             </div>
 
+            <div className="space-y-3">
+              {introSections.map((section) => {
+                const isOpen = openIntroSection === section.id;
+
+                return (
+                  <div
+                    className="rounded-[22px] border border-slate-200 bg-slate-50/80"
+                    key={section.id}
+                  >
+                    <button
+                      className="flex w-full items-center justify-between gap-4 px-5 py-4 text-left"
+                      type="button"
+                      onClick={() =>
+                        setOpenIntroSection(isOpen ? null : section.id)
+                      }
+                      aria-expanded={isOpen}
+                    >
+                      <span className="text-sm font-semibold text-slate-900">
+                        {section.title}
+                      </span>
+                      <span className="text-lg text-slate-500">
+                        {isOpen ? "-" : "+"}
+                      </span>
+                    </button>
+                    {isOpen && (
+                      <div className="space-y-2 border-t border-slate-200 px-5 py-4">
+                        {section.content.map((line) => (
+                          <p
+                            className="text-sm leading-6 text-slate-600"
+                            key={line}
+                          >
+                            {line}
+                          </p>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
             <div className="grid gap-4 md:grid-cols-3">
-              <div className="rounded-[26px] border border-slate-200 bg-slate-50/90 p-5">
+              <div className="rounded-[22px] border border-slate-200 bg-white/80 p-5">
                 <div className="flex items-center justify-between gap-3">
                   <p className="text-xs font-medium uppercase tracking-[0.24em] text-slate-500">
-                    Wallet Address
+                    Wallet
                   </p>
                   {address && <CopyButton value={address} />}
                 </div>
                 <p className="mt-3 text-sm text-slate-900">{walletCardValue}</p>
-                <p className="mt-2 text-xs text-slate-500">
-                  {address
-                    ? "MetaMask is connected for write operations."
-                    : "Connect MetaMask to issue certificate records."}
-                </p>
               </div>
 
-              <div className="rounded-[26px] border border-slate-200 bg-slate-50/90 p-5">
+              <div className="rounded-[22px] border border-slate-200 bg-white/80 p-5">
                 <p className="text-xs font-medium uppercase tracking-[0.24em] text-slate-500">
-                  Chain Status
+                  Network
                 </p>
                 <p className="mt-3 text-sm text-slate-900">
                   {chainStatusValue}
                 </p>
-                <p className="mt-2 text-xs text-slate-500">
-                  {address
-                    ? `Wallet chain ID: ${chainId}`
-                    : `Target demo network: ${targetChainName}`}
-                </p>
               </div>
 
-              <div className="rounded-[26px] border border-slate-200 bg-slate-50/90 p-5">
+              <div className="rounded-[22px] border border-slate-200 bg-white/80 p-5">
                 <div className="flex items-center justify-between gap-3">
                   <p className="text-xs font-medium uppercase tracking-[0.24em] text-slate-500">
-                    Contract Address
+                    Contract
                   </p>
                   {contractAddress && <CopyButton value={contractAddress} />}
                 </div>
                 <p className="mt-3 text-sm text-slate-900">
                   {contractCardValue}
-                </p>
-                <p className="mt-2 text-xs text-slate-500">
-                  {contractAddress
-                    ? "Reads and writes target the deployed CertiChain contract."
-                    : "Set NEXT_PUBLIC_CONTRACT_ADDRESS before running the demo."}
                 </p>
               </div>
             </div>
@@ -628,29 +959,29 @@ const CertiChainDemo = () => {
         <aside className="panel-shadow rounded-[34px] border border-white/70 bg-white/82 p-8 backdrop-blur-xl">
           <SectionHeader
             eyebrow="Demo Flow"
-            title="How the classroom demo works"
-            description="Use this as a simple four-step narrative when presenting the prototype."
+            title="Classroom walkthrough"
+            description="A compact sequence for showing why revocation changes the final verification result."
           />
           <div className="mt-6 space-y-4">
             {demoFlow.map((step, index) => (
               <div
                 key={step}
-                className="flex items-start gap-4 rounded-[24px] border border-slate-100 bg-slate-50/80 p-4"
+                className="flex items-start gap-4 rounded-[22px] border border-slate-100 bg-slate-50/80 p-4"
               >
-                <span className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-950 text-sm font-semibold text-white">
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-950 text-sm font-semibold text-white">
                   {index + 1}
                 </span>
                 <div>
                   <p className="text-sm font-medium text-slate-900">{step}</p>
                   <p className="mt-1 text-xs leading-6 text-slate-500">
                     {index === 0 &&
-                      "Start with a certificate-like record that looks familiar to students."}
+                      "Create a record with public certificate fields and an off-chain metadata hash."}
                     {index === 1 &&
-                      "The browser computes a metadata hash locally so the raw text is not written to chain."}
+                      "Use the same metadata text to show a VALID result."}
                     {index === 2 &&
-                      "MetaMask signs and sends the issuance transaction to the local Hardhat network."}
+                      "Send a revoke transaction from the original issuer wallet."}
                     {index === 3 &&
-                      "Recreate the same hash later to prove the record still matches the on-chain anchor."}
+                      "Run verification again: the hash matches, but the status is REVOKED."}
                   </p>
                 </div>
               </div>
@@ -674,50 +1005,7 @@ const CertiChainDemo = () => {
             </div>
           )}
 
-          {!address && (
-            <div className="mt-6 rounded-[24px] border border-slate-200 bg-slate-50/80 p-4">
-              <p className="text-sm text-slate-700">
-                MetaMask is required for certificate issuance because this
-                action sends a transaction.
-              </p>
-              <button
-                className="mt-4 rounded-full bg-slate-950 px-5 py-3 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
-                onClick={() =>
-                  injectedConnector &&
-                  connect({ connector: injectedConnector })
-                }
-                disabled={!injectedConnector || isConnecting}
-                type="button"
-              >
-                {isConnecting ? "Connecting MetaMask..." : "Connect MetaMask"}
-              </button>
-            </div>
-          )}
-
-          {address && isWrongNetwork && (
-            <div className="mt-6 rounded-[24px] border border-amber-200 bg-amber-50/90 p-4">
-              <p className="text-sm text-amber-900">
-                MetaMask is on the wrong network. Switch to {targetChainName} to
-                issue certificates on the demo chain.
-              </p>
-              <button
-                className="mt-4 rounded-full bg-amber-600 px-5 py-3 text-sm font-medium text-white transition hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-50"
-                onClick={() => switchChain({ chainId: targetChainId })}
-                disabled={isSwitchingChain}
-                type="button"
-              >
-                {isSwitchingChain
-                  ? "Switching Network..."
-                  : `Switch to ${targetChainName}`}
-              </button>
-              {switchChainError && (
-                <p className="mt-3 text-sm text-rose-600">
-                  Automatic switching failed. Select {targetChainName} manually
-                  in MetaMask and try again.
-                </p>
-              )}
-            </div>
-          )}
+          {renderWalletWriteNotice("issue")}
 
           <form className="mt-6 space-y-5" onSubmit={handleIssueSubmit}>
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-[24px] border border-slate-200 bg-slate-50/80 p-4">
@@ -726,8 +1014,7 @@ const CertiChainDemo = () => {
                   Need a quick classroom example?
                 </p>
                 <p className="mt-1 text-xs text-slate-500">
-                  Use sample data to instantly populate a ready-to-demo
-                  certificate record.
+                  Use sample data to populate a ready-to-demo certificate.
                 </p>
               </div>
               <button
@@ -830,10 +1117,6 @@ Completion Date: 2026-04-16`}
                   {issueMetadataHash ||
                     "Type metadata text to compute the hash locally in the browser."}
                 </p>
-                <p className="mt-3 text-xs leading-6 text-slate-500">
-                  The full metadata stays off-chain in this demo. Only the hash
-                  becomes the immutable blockchain anchor.
-                </p>
               </div>
 
               <div className="rounded-[26px] border border-slate-200 bg-white p-5">
@@ -846,7 +1129,9 @@ Completion Date: 2026-04-16`}
                     {issueForm.certificateId.trim() || "Pending input"}
                   </p>
                   <p>
-                    <span className="font-medium text-slate-900">Recipient:</span>{" "}
+                    <span className="font-medium text-slate-900">
+                      Recipient:
+                    </span>{" "}
                     {issueForm.recipientName.trim() || "Pending input"}
                   </p>
                   <p>
@@ -856,14 +1141,6 @@ Completion Date: 2026-04-16`}
                   <p>
                     <span className="font-medium text-slate-900">Issuer:</span>{" "}
                     {issueForm.issuerName.trim() || "Pending input"}
-                  </p>
-                  <p>
-                    <span className="font-medium text-slate-900">
-                      Metadata Hash:
-                    </span>{" "}
-                    {issueMetadataHash
-                      ? truncateMiddle(issueMetadataHash, 12, 10)
-                      : "Pending input"}
                   </p>
                 </div>
               </div>
@@ -884,46 +1161,11 @@ Completion Date: 2026-04-16`}
                 )}
               </div>
 
-              <div className="mt-5 space-y-3">
-                <ProgressItem
-                  label="Waiting for wallet confirmation"
-                  state={getIssueProgressState(
-                    "wallet",
-                    issueStage,
-                    issueTransactionHash,
-                  )}
-                />
-                <ProgressItem
-                  label="Transaction submitted"
-                  state={getIssueProgressState(
-                    "submitted",
-                    issueStage,
-                    issueTransactionHash,
-                  )}
-                />
-                <ProgressItem
-                  label="Waiting for block confirmation"
-                  state={getIssueProgressState(
-                    "confirmation",
-                    issueStage,
-                    issueTransactionHash,
-                  )}
-                />
-                <ProgressItem
-                  label="Certificate issued successfully"
-                  state={getIssueProgressState(
-                    "success",
-                    issueStage,
-                    issueTransactionHash,
-                  )}
-                />
-              </div>
-
-              {issueTransactionHash && (
-                <p className="mt-4 break-all font-mono text-[12px] text-slate-500">
-                  Tx Hash: {issueTransactionHash}
-                </p>
-              )}
+              <TransactionProgress
+                successLabel="Certificate issued successfully"
+                stage={issueStage}
+                transactionHash={issueTransactionHash}
+              />
             </div>
 
             <button
@@ -947,7 +1189,7 @@ Completion Date: 2026-04-16`}
           <SectionHeader
             eyebrow="Main Function"
             title="Verify Certificate"
-            description="Recreate the hash from the supplied metadata text and compare it against the on-chain record."
+            description="Recreate the hash from metadata text and report whether the certificate is valid, revoked, mismatched, or missing."
           />
 
           <form className="mt-6 space-y-5" onSubmit={handleVerifySubmit}>
@@ -993,8 +1235,8 @@ Completion Date: 2026-04-16`}
                   "The same local hashing rule will be applied here before verification."}
               </p>
               <p className="mt-3 text-xs leading-6 text-slate-500">
-                Try tampered metadata after a valid check: change one word or a
-                date and verify again to show why the hash no longer matches.
+                After a valid check, change one word or date to show a hash
+                mismatch, then revoke and verify again to show REVOKED.
               </p>
             </div>
 
@@ -1041,144 +1283,231 @@ Completion Date: 2026-04-16`}
         </article>
       </section>
 
-      <section className="space-y-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-500">
-              Result Panels
-            </p>
-            <h3 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">
-              Latest Issued Certificate and Verification Result
-            </h3>
+      <section className="panel-shadow rounded-[34px] border border-white/70 bg-white/86 p-7 backdrop-blur-xl md:p-8">
+        <SectionHeader
+          eyebrow="Main Function"
+          title="Revoke Certificate"
+          description="Mark an issued certificate as revoked. The original issuer wallet must submit this transaction."
+        />
+
+        {!contractAddress && (
+          <div className="mt-6 rounded-[24px] border border-amber-200 bg-amber-50/90 p-4 text-sm text-amber-900">
+            Deploy CertiChain locally and set `NEXT_PUBLIC_CONTRACT_ADDRESS`
+            before revoking certificates.
           </div>
+        )}
+
+        {renderWalletWriteNotice("revoke")}
+
+        <form
+          className="mt-6 grid gap-5 lg:grid-cols-[0.85fr_1.15fr]"
+          onSubmit={handleRevokeSubmit}
+        >
+          <div className="space-y-5">
+            <label className="block">
+              <span className="text-sm font-medium text-slate-700">
+                Certificate ID
+              </span>
+              <input
+                className="mt-2 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-slate-900"
+                value={revokeForm.certificateId}
+                onChange={(event) =>
+                  handleRevokeFieldChange("certificateId", event.target.value)
+                }
+                placeholder="CERT-2026-001"
+              />
+              <FieldErrorText message={revokeErrors.certificateId} />
+            </label>
+
+            {latestIssued && (
+              <button
+                className="rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+                type="button"
+                onClick={handleLoadLatestIntoRevoke}
+              >
+                Use Latest Issued Certificate
+              </button>
+            )}
+
+            <button
+              className="w-full rounded-full bg-amber-600 px-6 py-4 text-sm font-medium text-white transition hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-50"
+              type="submit"
+              disabled={
+                !contractAddress ||
+                !address ||
+                isWrongNetwork ||
+                revokeLoading
+              }
+            >
+              {revokeLoading
+                ? "Revoking Certificate On Chain..."
+                : "Revoke Certificate"}
+            </button>
+          </div>
+
+          <div className="rounded-[26px] border border-slate-200 bg-slate-50/90 p-5">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold text-slate-900">
+                  {revokeStatusTitle}
+                </p>
+                <p className="mt-1 text-xs leading-6 text-slate-500">
+                  {revokeStatusDescription}
+                </p>
+              </div>
+              {revokeTransactionHash && (
+                <CopyButton value={revokeTransactionHash} label="Copy Tx Hash" />
+              )}
+            </div>
+
+            <TransactionProgress
+              successLabel="Certificate revoked successfully"
+              stage={revokeStage}
+              transactionHash={revokeTransactionHash}
+            />
+
+            {revokePanel && (
+              <div className="mt-5 rounded-[22px] border border-amber-200 bg-amber-50/80 p-4 text-sm text-amber-900">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="font-semibold">Revoked certificate</p>
+                    <p className="mt-2">
+                      {revokePanel.certificate.certificateId} was revoked at{" "}
+                      {formatPanelTimestamp(revokePanel.revokedAt)}.
+                    </p>
+                  </div>
+                  <CopyButton
+                    value={revokePanel.transactionHash}
+                    label="Copy Tx Hash"
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+        </form>
+      </section>
+
+      <section className="space-y-4">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-500">
+            Result Panels
+          </p>
+          <h3 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">
+            Certificate Status and Verification Result
+          </h3>
         </div>
 
-        <div className="grid gap-6 xl:grid-cols-2">
-          <article className="panel-shadow rounded-[34px] border border-white/70 bg-white/86 p-7 backdrop-blur-xl md:p-8">
+        <div className="grid gap-6 xl:grid-cols-3">
+          <article className="panel-shadow rounded-[34px] border border-white/70 bg-white/86 p-7 backdrop-blur-xl md:p-8 xl:col-span-1">
             <SectionHeader
               eyebrow="Result"
               title="Latest Issued Certificate"
-              description="This panel updates after a successful issuance so you can immediately point to the newest record during a lecture."
+              description="The latest locally captured issuance updates after issue and revoke transactions."
             />
 
             <div className="mt-6">
               {latestIssued ? (
                 <div className="space-y-4">
-                  <div className="rounded-[28px] border border-emerald-200 bg-emerald-50/70 p-5">
+                  <div
+                    className={`rounded-[28px] border p-5 ${
+                      latestIssued.certificate.revoked
+                        ? "border-amber-200 bg-amber-50/80"
+                        : "border-emerald-200 bg-emerald-50/70"
+                    }`}
+                  >
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div>
-                        <p className="text-sm font-semibold text-emerald-900">
+                        <p className="text-sm font-semibold text-slate-900">
                           Latest issuance captured
                         </p>
-                        <p className="mt-1 text-xs text-emerald-800">
-                          Stored locally for demo convenience at{" "}
+                        <p className="mt-1 text-xs text-slate-600">
+                          Stored locally at{" "}
                           {formatPanelTimestamp(latestIssued.storedAt)}.
                         </p>
                       </div>
-                      <CopyButton value={latestIssued.transactionHash} label="Copy Tx Hash" />
+                      <CertificateStatusPill
+                        revoked={latestIssued.certificate.revoked}
+                      />
                     </div>
                   </div>
 
-                  <div className="grid gap-4 md:grid-cols-2">
+                  <div className="grid gap-4">
                     <DetailRow
                       label="Certificate ID"
                       value={latestIssued.certificate.certificateId}
                     />
                     <DetailRow
-                      label="Recipient Name"
+                      label="Recipient"
                       value={latestIssued.certificate.recipientName}
                     />
                     <DetailRow
-                      label="Course Name"
+                      label="Course"
                       value={latestIssued.certificate.courseName}
                     />
                     <DetailRow
-                      label="Issuer Name"
-                      value={latestIssued.certificate.issuerName}
+                      label="Issuer Wallet"
+                      value={latestIssued.certificate.issuerWallet}
+                      mono
+                      copyValue={latestIssued.certificate.issuerWallet}
                     />
                     <DetailRow
                       label="Issue Time"
-                      value={formatIssueTime(latestIssued.certificate.issueTime)}
+                      value={formatIssueTime(
+                        latestIssued.certificate.issueTime,
+                      )}
                     />
-                    <DetailRow label="Chain" value={latestIssued.chainName} />
+                    <DetailRow
+                      label="Revoke Time"
+                      value={formatOptionalChainTime(
+                        latestIssued.certificate.revokedAt,
+                      )}
+                    />
                     <DetailRow
                       label="Metadata Hash"
                       value={latestIssued.certificate.metadataHash}
                       mono
                       copyValue={latestIssued.certificate.metadataHash}
                     />
-                    <DetailRow
-                      label="Transaction Hash"
-                      value={latestIssued.transactionHash}
-                      mono
-                    />
                   </div>
-
-                  <p className="text-xs leading-6 text-slate-500">
-                    Current limitation: this panel is restored from local browser
-                    storage after refresh for demo continuity. It is not yet
-                    re-querying the most recent issuance directly from chain.
-                  </p>
                 </div>
               ) : (
                 <ResultPlaceholder
                   title="No certificate has been issued in this browser session yet."
-                  description="Issue a sample certificate above. Once the transaction is confirmed, its details will appear here as the latest record."
+                  description="Issue a sample certificate above. Once the transaction is confirmed, its details will appear here."
                 />
               )}
             </div>
           </article>
 
-          <article className="panel-shadow rounded-[34px] border border-white/70 bg-white/86 p-7 backdrop-blur-xl md:p-8">
+          <article className="panel-shadow rounded-[34px] border border-white/70 bg-white/86 p-7 backdrop-blur-xl md:p-8 xl:col-span-2">
             <SectionHeader
               eyebrow="Result"
               title="Verification Result"
-              description="Use this panel to explain what a valid match means and what a tampered mismatch looks like."
+              description="This panel separates existence, hash match, revoke state, and final validity."
             />
 
             <div className="mt-6">
               {verificationPanel ? (
                 <div className="space-y-4">
                   <div
-                    className={`rounded-[28px] border p-5 ${
-                      verificationPanel.isValid
-                        ? "border-emerald-200 bg-emerald-50/75"
-                        : "border-rose-200 bg-rose-50/85"
-                    }`}
+                    className={`rounded-[28px] border p-5 ${getStatusClasses(
+                      statusContent[verificationPanel.status].tone,
+                    )}`}
                   >
-                    <p
-                      className={`text-xs font-semibold uppercase tracking-[0.3em] ${
-                        verificationPanel.isValid
-                          ? "text-emerald-700"
-                          : "text-rose-700"
-                      }`}
-                    >
-                      Verification Result
+                    <p className="text-xs font-semibold uppercase tracking-[0.3em]">
+                      Certificate Status
                     </p>
                     <div className="mt-3 flex flex-wrap items-center justify-between gap-4">
-                      <p
-                        className={`text-4xl font-semibold tracking-tight ${
-                          verificationPanel.isValid
-                            ? "text-emerald-900"
-                            : "text-rose-900"
-                        }`}
-                      >
-                        {verificationPanel.isValid ? "VALID" : "INVALID"}
+                      <p className="text-4xl font-semibold tracking-tight">
+                        {statusContent[verificationPanel.status].label}
                       </p>
                       <p className="text-xs text-slate-500">
-                        Checked at {formatPanelTimestamp(verificationPanel.checkedAt)}
+                        Checked at{" "}
+                        {formatPanelTimestamp(verificationPanel.checkedAt)}
                       </p>
                     </div>
-                    <p
-                      className={`mt-4 text-sm leading-6 ${
-                        verificationPanel.isValid
-                          ? "text-emerald-900"
-                          : "text-rose-900"
-                      }`}
-                    >
-                      {verificationPanel.isValid
-                        ? "The on-chain hash matches the provided metadata. The certificate record appears authentic and untampered."
-                        : "The certificate could not be verified. The certificate ID may not exist, or the provided metadata text does not match the on-chain proof."}
+                    <p className="mt-4 text-sm leading-6">
+                      {statusContent[verificationPanel.status].description}
                     </p>
                   </div>
 
@@ -1188,32 +1517,46 @@ Completion Date: 2026-04-16`}
                       value={verificationPanel.certificateId}
                     />
                     <DetailRow
+                      label="Final Valid"
+                      value={verificationPanel.valid ? "Yes" : "No"}
+                    />
+                    <DetailRow
+                      label="Hash Match"
+                      value={verificationPanel.hashMatches ? "Yes" : "No"}
+                    />
+                    <DetailRow
+                      label="Revoked"
+                      value={verificationPanel.revoked ? "Yes" : "No"}
+                    />
+                    <DetailRow
                       label="Submitted Metadata Hash"
                       value={verificationPanel.metadataHash}
                       mono
                       copyValue={verificationPanel.metadataHash}
                     />
+                    {verificationPanel.certificate && (
+                      <DetailRow
+                        label="On-chain Metadata Hash"
+                        value={verificationPanel.certificate.metadataHash}
+                        mono
+                        copyValue={verificationPanel.certificate.metadataHash}
+                      />
+                    )}
                   </div>
 
-                  {verificationPanel.isValid && verificationPanel.certificate ? (
+                  {verificationPanel.certificate ? (
                     <div className="grid gap-4 md:grid-cols-2">
                       <DetailRow
-                        label="Recipient Name"
+                        label="Recipient"
                         value={verificationPanel.certificate.recipientName}
                       />
                       <DetailRow
-                        label="Course Name"
+                        label="Course"
                         value={verificationPanel.certificate.courseName}
                       />
                       <DetailRow
-                        label="Issuer Name"
+                        label="Issuer"
                         value={verificationPanel.certificate.issuerName}
-                      />
-                      <DetailRow
-                        label="Issue Time"
-                        value={formatIssueTime(
-                          verificationPanel.certificate.issueTime,
-                        )}
                       />
                       <DetailRow
                         label="Issuer Wallet"
@@ -1222,23 +1565,27 @@ Completion Date: 2026-04-16`}
                         copyValue={verificationPanel.certificate.issuerWallet}
                       />
                       <DetailRow
-                        label="Metadata Hash"
-                        value={verificationPanel.certificate.metadataHash}
-                        mono
-                        copyValue={verificationPanel.certificate.metadataHash}
+                        label="Issue Time"
+                        value={formatIssueTime(
+                          verificationPanel.certificate.issueTime,
+                        )}
+                      />
+                      <DetailRow
+                        label="Revoke Time"
+                        value={formatOptionalChainTime(
+                          verificationPanel.certificate.revokedAt,
+                        )}
                       />
                     </div>
                   ) : (
-                    <div className="rounded-[28px] border border-rose-100 bg-white p-5 text-sm text-slate-600">
+                    <div className="rounded-[28px] border border-slate-100 bg-white p-5 text-sm text-slate-600">
                       <p className="font-medium text-slate-900">
-                        Why it may be invalid
+                        Why no certificate details are shown
                       </p>
                       <p className="mt-2 leading-6">
-                        Most classroom demos fail here for one of two reasons:
-                        the certificate ID does not exist on chain, or the
-                        metadata text has been changed after issuance. Even a
-                        small edit produces a different hash and breaks the
-                        match.
+                        CertiChain only returns full details for certificate IDs
+                        that exist on chain. Check the ID or issue a new record
+                        first.
                       </p>
                     </div>
                   )}
@@ -1246,7 +1593,7 @@ Completion Date: 2026-04-16`}
               ) : (
                 <ResultPlaceholder
                   title="No verification has been run yet."
-                  description="After you submit the verify form, the result panel will show either a green VALID match or a red INVALID mismatch with supporting context."
+                  description="After you submit the verify form, the result panel will show Valid, Revoked, Hash Mismatch, or Not Found with supporting fields."
                 />
               )}
             </div>

@@ -17,7 +17,9 @@ contract CertiChain {
         string metadataHash;
         address issuerWallet;
         uint256 issueTime;
-        bool isValid;
+        bool revoked;
+        uint256 revokedAt;
+        address revokedBy;
     }
 
     mapping(string => Certificate) private certificates;
@@ -30,6 +32,12 @@ contract CertiChain {
         string metadataHash,
         address indexed issuerWallet,
         uint256 issueTime
+    );
+
+    event CertificateRevoked(
+        string indexed certificateId,
+        address indexed revokedBy,
+        uint256 revokedAt
     );
 
     /**
@@ -58,7 +66,9 @@ contract CertiChain {
             metadataHash: metadataHash,
             issuerWallet: msg.sender,
             issueTime: block.timestamp,
-            isValid: true
+            revoked: false,
+            revokedAt: 0,
+            revokedBy: address(0)
         });
 
         emit CertificateIssued(
@@ -73,25 +83,59 @@ contract CertiChain {
     }
 
     /**
-     * @notice Verifies whether a certificate exists and matches the supplied hash.
+     * @notice Revokes an existing certificate record.
+     * @dev For the classroom demo, the original issuer wallet is the only account allowed
+     *      to revoke its certificate.
+     */
+    function revokeCertificate(string calldata certificateId) external {
+        require(_certificateExists(certificateId), "Certificate not found");
+
+        Certificate storage certificate = certificates[certificateId];
+
+        require(
+            certificate.issuerWallet == msg.sender,
+            "Only issuer can revoke"
+        );
+        require(!certificate.revoked, "Certificate already revoked");
+
+        certificate.revoked = true;
+        certificate.revokedAt = block.timestamp;
+        certificate.revokedBy = msg.sender;
+
+        emit CertificateRevoked(certificateId, msg.sender, block.timestamp);
+    }
+
+    /**
+     * @notice Verifies whether a certificate exists, matches the supplied hash, and is active.
      */
     function verifyCertificate(
         string calldata certificateId,
         string calldata metadataHash
-    ) external view returns (bool) {
+    )
+        external
+        view
+        returns (
+            bool exists,
+            bool hashMatches,
+            bool revoked,
+            bool valid
+        )
+    {
         if (!_certificateExists(certificateId)) {
-            return false;
+            return (false, false, false, false);
         }
 
         Certificate storage certificate = certificates[certificateId];
-
-        if (!certificate.isValid) {
-            return false;
-        }
-
-        return
+        bool metadataMatches =
             keccak256(bytes(certificate.metadataHash)) ==
             keccak256(bytes(metadataHash));
+
+        return (
+            true,
+            metadataMatches,
+            certificate.revoked,
+            metadataMatches && !certificate.revoked
+        );
     }
 
     /**
@@ -110,7 +154,9 @@ contract CertiChain {
             string memory metadataHash,
             address issuerWallet,
             uint256 issueTime,
-            bool isValid
+            bool revoked,
+            uint256 revokedAt,
+            address revokedBy
         )
     {
         require(_certificateExists(certificateId), "Certificate not found");
@@ -125,7 +171,9 @@ contract CertiChain {
             certificate.metadataHash,
             certificate.issuerWallet,
             certificate.issueTime,
-            certificate.isValid
+            certificate.revoked,
+            certificate.revokedAt,
+            certificate.revokedBy
         );
     }
 
